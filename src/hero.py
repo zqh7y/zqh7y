@@ -62,28 +62,6 @@ def n4(v):
     return "0" if s in ("", "-0") else s
 
 
-def hex2rgb(h):
-    h = h.lstrip("#")
-    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
-
-
-def rgb2hex(c):
-    return "#" + "".join(f"{max(0, min(255, round(v))):02x}" for v in c)
-
-
-def mix(a, b, t):
-    a, b = hex2rgb(a), hex2rgb(b)
-    return rgb2hex(tuple(a[i] + (b[i] - a[i]) * t for i in range(3)))
-
-
-def ramp(stops, t):
-    """stops: list of hex colors spaced evenly over [0,1]."""
-    t = max(0.0, min(1.0, t))
-    seg = t * (len(stops) - 1)
-    i = min(int(seg), len(stops) - 2)
-    return mix(stops[i], stops[i + 1], seg - i)
-
-
 # --------------------------------------------------------------------------
 # 3D helpers
 # --------------------------------------------------------------------------
@@ -201,7 +179,6 @@ def inner_rot(k):
     return mm(rz(-0.2), mm(ry(-3 * th), rz(th)))
 
 
-HOLO = [CYAN, VIOLET, PINK]
 LIGHT = norm((-0.55, 0.75, 0.65))
 
 
@@ -227,7 +204,7 @@ def build_object():
     # ---- faces: faint iridescent glass, only front-facing ones lit
     face_parts = []
     for f in faces:
-        ds, ops, cols = [], [], []
+        ds, ops = [], []
         for k in range(NF + 1):
             P = [frames_o[k][i] for i in f]
             sp = [project(p) for p in P]
@@ -242,69 +219,55 @@ def build_object():
                 op = 0.0
             else:
                 op = 0.03 + 0.10 * lit + 0.20 * spec
-            hue = 0.5 + 0.5 * (n[0] * 0.8 - n[1] * 0.6)
-            col = ramp(HOLO, hue)
-            if spec > 0.05:
-                col = mix(col, LIME, min(0.85, spec * 1.4))
             ops.append(n2(op))
-            cols.append(col)
         face_parts.append(
-            f'<path d="{ds[0]}" fill="{cols[0]}" fill-opacity="{ops[0]}">'
-            + anim("d", ds) + anim("fill-opacity", ops) + anim("fill", cols) + "</path>")
-    out.append('<g class="faces">' + "".join(face_parts) + "</g>")
+            f'<path d="{ds[0]}" fill-opacity="{ops[0]}">'
+            + anim("d", ds) + anim("fill-opacity", ops) + "</path>")
+    out.append('<g class="faces" fill="url(#holo)">' + "".join(face_parts) + "</g>")
 
     # ---- edges (outer icosahedron), depth shaded + holo colored
-    def edge_markup(frames, eds, color_fn, wmin, wmax, omin, omax, scale_tag):
+    # each edge animates only its shape and opacity: per-element width and
+    # colour animations were the main paint cost, so depth reads through
+    # opacity alone and colour comes from a shared gradient on the group
+    def edge_markup(frames, eds, omin, omax, scale_tag):
         parts = []
         for (a, b) in eds:
-            x1s, y1s, x2s, y2s, ws, os_, cs = [], [], [], [], [], [], []
+            x1s, y1s, x2s, y2s, os_ = [], [], [], [], []
             for k in range(NF + 1):
                 pa, pb = frames[k][a], frames[k][b]
                 (sx1, sy1), (sx2, sy2) = project(pa), project(pb)
                 x1s.append(n1(sx1)); y1s.append(n1(sy1)); x2s.append(n1(sx2)); y2s.append(n1(sy2))
                 zm = (pa[2] + pb[2]) / 2 / scale_tag
                 t = max(0.0, min(1.0, (zm + 1) / 2))
-                ws.append(n1(wmin + (wmax - wmin) * t ** 1.2))
                 os_.append(n2(omin + (omax - omin) * t ** 1.6))
-                cs.append(color_fn(pa, pb, t) if color_fn else LIME)
-            parts.append(
-                f'<line x1="{x1s[0]}" y1="{y1s[0]}" x2="{x2s[0]}" y2="{y2s[0]}" '
-                f'stroke="{cs[0]}" stroke-width="{ws[0]}" stroke-opacity="{os_[0]}">'
-                + anim("x1", x1s) + anim("y1", y1s) + anim("x2", x2s) + anim("y2", y2s)
-                + anim("stroke-width", ws) + anim("stroke-opacity", os_)
-                + (anim("stroke", cs) if color_fn is not None else "")
-                + "</line>")
+            ds = [f"M{x1s[k]} {y1s[k]}L{x2s[k]} {y2s[k]}" for k in range(NF + 1)]
+            parts.append(f'<path d="{ds[0]}" stroke-opacity="{os_[0]}">'
+                         + anim("d", ds) + anim("stroke-opacity", os_) + "</path>")
         return "".join(parts)
 
-    def holo_edge(pa, pb, t):
-        m = norm(tuple((pa[i] + pb[i]) / 2 for i in range(3)))
-        hue = 0.5 + 0.5 * (m[0] * 0.75 - m[1] * 0.65)
-        col = ramp(HOLO, hue)
-        g = max(0.0, dot(m, LIGHT)) ** 6
-        return mix(col, "#ffffff", 0.55 * g) if g > 0.02 else col
-
-    wire_outer = edge_markup(frames_o, edges, holo_edge, 0.5, 2.6, 0.12, 1.0, 1.0)
-    wire_inner = edge_markup(frames_i, oedges, None, 0.6, 1.8, 0.25, 1.0, 0.40)
-    out.append(f'<g id="wire" stroke-linecap="round">{wire_outer}</g>')
+    wire_outer = edge_markup(frames_o, edges, 0.1, 1.0, 1.0)
+    wire_inner = edge_markup(frames_i, oedges, 0.25, 1.0, 0.40)
+    out.append(f'<g id="wire" fill="none" stroke="url(#holo)" stroke-width="1.7" '
+               f'stroke-linecap="round">{wire_outer}</g>')
 
     # ---- vertices
     vparts = []
     for i in range(len(verts)):
-        cx, cy, rs, ops = [], [], [], []
+        cx, cy, ops = [], [], []
         for k in range(NF + 1):
             p = frames_o[k][i]
             x, y = project(p)
             t = (p[2] + 1) / 2
             cx.append(n1(x)); cy.append(n1(y))
-            rs.append(n2(1.0 + 2.6 * t ** 1.3))
             ops.append(n2(0.18 + 0.82 * t ** 1.6))
-        vparts.append(f'<circle cx="{cx[0]}" cy="{cy[0]}" r="{rs[0]}" opacity="{ops[0]}">'
-                      + anim("cx", cx) + anim("cy", cy) + anim("r", rs) + anim("opacity", ops)
+        vparts.append(f'<circle cx="{cx[0]}" cy="{cy[0]}" r="2.2" opacity="{ops[0]}">'
+                      + anim("cx", cx) + anim("cy", cy) + anim("opacity", ops)
                       + "</circle>")
     out.append(f'<g id="verts" fill="{TEXT}">' + "".join(vparts) + "</g>")
 
     # ---- lime core
-    out.append(f'<g id="core" stroke-linecap="round">{wire_inner}</g>')
+    out.append(f'<g id="core" fill="none" stroke="{LIME}" stroke-width="1.3" '
+               f'stroke-linecap="round">{wire_inner}</g>')
 
     # ---- lime pulses running along a hamiltonian cycle of the shell
     cyc = hamiltonian_cycle(12, edges)
@@ -331,14 +294,13 @@ def build_object():
     pparts = []
     tracks = [pulse_track(cyc), pulse_track(list(reversed(cyc[6:] + cyc[:6])))]
     for ti, (cx, cy, rs, ops) in enumerate(tracks):
-        for j, lag in enumerate((0.0, 0.07, 0.14, 0.21)):
-            scale = (1.0, 0.8, 0.62, 0.45)[j]
-            fade = (1.0, 0.6, 0.38, 0.2)[j]
+        for j, lag in enumerate((0.0, 0.1)):
+            scale = (1.0, 0.65)[j]
+            fade = (1.0, 0.4)[j]
             begin = f' begin="{n2(lag - T_ROT)}s"' if lag else ""
             rs_j = [n2(float("0" + r if r.startswith(".") else r) * scale) for r in rs]
             ops_j = [n2(float("0" + o if o.startswith(".") else o) * fade) for o in ops]
-            pid = f' id="ph{ti}"' if j == 0 else ""
-            pparts.append(f'<circle{pid} cx="{cx[0]}" cy="{cy[0]}" r="{rs_j[0]}" opacity="0">'
+            pparts.append(f'<circle cx="{cx[0]}" cy="{cy[0]}" r="{rs_j[0]}" opacity="0">'
                           + anim("cx", cx, extra=begin) + anim("cy", cy, extra=begin)
                           + anim("r", rs_j, extra=begin) + anim("opacity", ops_j, extra=begin)
                           + "</circle>")
@@ -397,7 +359,7 @@ def build_ring():
                 f'stroke-opacity=".28"/>' + f'<g fill="{LIME}">{sat(ob, "satB")}</g>')
     front_svg = (f'<path d="{"".join(front)}" fill="none" stroke="url(#ringG)" stroke-width="1.4" '
                  f'stroke-opacity=".7"/>'
-                 f'<g fill="{LIME}"><use xlink:href="#satF" filter="url(#bloomS)"/>{sat(of, "satF")}</g>')
+                 f'<g fill="{LIME}">{sat(of, "satF")}</g>')
     return back_svg, front_svg
 
 
@@ -586,8 +548,6 @@ def build():
 @keyframes sh{{0%,100%{{transform:scale(1);opacity:.9}}50%{{transform:scale(.86);opacity:.6}}}}
 .halo{{transform-box:fill-box;transform-origin:center;animation:halo 6s ease-in-out infinite}}
 @keyframes halo{{0%,100%{{opacity:.85;transform:scale(1)}}50%{{opacity:1;transform:scale(1.06)}}}}
-.scanband{{animation:scan 7s linear infinite}}
-@keyframes scan{{0%{{transform:translateY(-80px)}}100%{{transform:translateY({H + 80}px)}}}}
 .ping{{transform-box:fill-box;transform-origin:center;animation:ping 2s ease-out infinite}}
 @keyframes ping{{0%{{transform:scale(1);opacity:.7}}80%,100%{{transform:scale(2.8);opacity:0}}}}
 """
@@ -610,6 +570,9 @@ def build():
              f'<stop offset=".35" stop-color="{CYAN}" stop-opacity=".12"/>'
              f'<stop offset=".7" stop-color="{PINK}" stop-opacity=".04"/>'
              f'<stop offset="1" stop-color="{PINK}" stop-opacity="0"/></radialGradient>')
+    s.append(f'<linearGradient id="holo" x1="{OCX - 90}" y1="{OCY - 80}" x2="{OCX + 90}" y2="{OCY + 80}" '
+             f'gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="{CYAN}"/>'
+             f'<stop offset=".5" stop-color="{VIOLET}"/><stop offset="1" stop-color="{PINK}"/></linearGradient>')
     s.append(f'<linearGradient id="ringG" x1="{OCX - 185}" y1="0" x2="{OCX + 185}" y2="0" '
              f'gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="{CYAN}" stop-opacity=".1"/>'
              f'<stop offset=".25" stop-color="{CYAN}"/><stop offset=".55" stop-color="{VIOLET}"/>'
@@ -621,19 +584,18 @@ def build():
     s.append(f'<radialGradient id="vig" cx="500" cy="170" r="640" gradientUnits="userSpaceOnUse">'
              f'<stop offset=".55" stop-color="#000" stop-opacity="0"/>'
              f'<stop offset="1" stop-color="#000" stop-opacity=".6"/></radialGradient>')
-    # floor mask: fade at the horizon and toward the text column
+    # floor fade: ink overlays at the horizon and toward the text column
+    # (static gradients instead of a mask, which would be recomposited every frame)
     s.append(f'<linearGradient id="fadeV" x1="0" y1="{HY}" x2="0" y2="{H}" gradientUnits="userSpaceOnUse">'
-             f'<stop offset="0" stop-color="#000"/><stop offset=".075" stop-color="#000"/>'
-             f'<stop offset=".2" stop-color="#555"/><stop offset=".5" stop-color="#b0b0b0"/>'
-             f'<stop offset="1" stop-color="#fff"/></linearGradient>')
+             f'<stop offset="0" stop-color="{INK}"/><stop offset=".075" stop-color="{INK}"/>'
+             f'<stop offset=".2" stop-color="{INK}" stop-opacity=".67"/>'
+             f'<stop offset=".5" stop-color="{INK}" stop-opacity=".31"/>'
+             f'<stop offset="1" stop-color="{INK}" stop-opacity="0"/></linearGradient>')
     s.append(f'<linearGradient id="fadeH" x1="0" y1="0" x2="{W}" y2="0" gradientUnits="userSpaceOnUse">'
-             f'<stop offset="0" stop-color="#000" stop-opacity=".82"/>'
-             f'<stop offset=".5" stop-color="#000" stop-opacity=".25"/>'
-             f'<stop offset=".7" stop-color="#000" stop-opacity="0"/>'
-             f'<stop offset="1" stop-color="#000" stop-opacity=".2"/></linearGradient>')
-    s.append(f'<mask id="floorMask" maskUnits="userSpaceOnUse" x="0" y="0" width="{W}" height="{H}">'
-             f'<rect y="{HY}" width="{W}" height="{H - HY}" fill="url(#fadeV)"/>'
-             f'<rect y="{HY}" width="{W}" height="{H - HY}" fill="url(#fadeH)"/></mask>')
+             f'<stop offset="0" stop-color="{INK}" stop-opacity=".82"/>'
+             f'<stop offset=".5" stop-color="{INK}" stop-opacity=".25"/>'
+             f'<stop offset=".7" stop-color="{INK}" stop-opacity="0"/>'
+             f'<stop offset="1" stop-color="{INK}" stop-opacity=".2"/></linearGradient>')
     s.append(f'<linearGradient id="horizon" x1="0" y1="0" x2="{W}" y2="0" gradientUnits="userSpaceOnUse">'
              f'<stop offset="0" stop-color="{LIME}" stop-opacity="0"/>'
              f'<stop offset=".45" stop-color="{LIME}" stop-opacity=".25"/>'
@@ -662,20 +624,6 @@ def build():
              '<rect x="0" y="150" width="560" height="9"/></clipPath>')
     s.append('<clipPath id="sliceB"><rect x="0" y="126" width="560" height="12"/>'
              '<rect x="0" y="164" width="560" height="22"/></clipPath>')
-    s.append('<filter id="bloom" x="-30%" y="-30%" width="160%" height="160%">'
-             '<feGaussianBlur stdDeviation="3.2"/></filter>')
-    # small moving dots: a bbox-relative region wide enough for the blur, but
-    # tiny compared with a scene-sized region, so it is cheap to redraw
-    s.append('<filter id="bloomS" x="-400%" y="-400%" width="900%" height="900%">'
-             '<feGaussianBlur stdDeviation="3.2"/></filter>')
-    s.append('<filter id="soft" x="-50%" y="-50%" width="200%" height="200%">'
-             '<feGaussianBlur stdDeviation="2"/></filter>')
-    s.append('<pattern id="scan" width="4" height="4" patternUnits="userSpaceOnUse">'
-             '<rect width="4" height="1" fill="#fff" fill-opacity=".022"/></pattern>')
-    s.append(f'<linearGradient id="band" x1="0" y1="0" x2="0" y2="1">'
-             f'<stop offset="0" stop-color="{LIME}" stop-opacity="0"/>'
-             f'<stop offset=".5" stop-color="{LIME}" stop-opacity=".035"/>'
-             f'<stop offset="1" stop-color="{LIME}" stop-opacity="0"/></linearGradient>')
     s.append("</defs>")
 
     s.append('<g clip-path="url(#frame)">')
@@ -684,11 +632,12 @@ def build():
     s.append(f'<g class="stars">{stars}</g>{sparks}')
 
     # floor
+    s.append(f'<g stroke="{LIME}" stroke-width="1.1" stroke-opacity=".55">{radial}{horiz}</g>')
+    s.append(f'<rect y="{HY}" width="{W}" height="{H - HY}" fill="url(#fadeV)"/>')
+    s.append(f'<rect y="{HY}" width="{W}" height="{H - HY}" fill="url(#fadeH)"/>')
     s.append(f'<rect y="{HY}" width="{W}" height="{H - HY}" fill="url(#floorFill)"/>')
-    s.append(f'<g mask="url(#floorMask)" stroke="{LIME}" stroke-width="1.1" stroke-opacity=".55">'
-             f'{radial}{horiz}</g>')
     s.append(f'<rect x="0" y="{HY - 0.6}" width="{W}" height="1.2" fill="url(#horizon)"/>')
-    s.append(f'<rect x="0" y="{HY - 3}" width="{W}" height="6" fill="url(#horizon)" opacity=".35" filter="url(#soft)"/>')
+    s.append(f'<rect x="0" y="{HY - 3}" width="{W}" height="6" fill="url(#horizon)" opacity=".18"/>')
 
     # 3D centerpiece
     s.append(f'<circle class="halo" cx="{OCX}" cy="{OCY}" r="190" fill="url(#glow)"/>')
@@ -698,15 +647,10 @@ def build():
     s.append(ring_back)
     # the core sits inside the shell: draw it first so the glass faces and the
     # near (bright) shell edges pass over it, not under it
-    s.append('<use xlink:href="#core" filter="url(#bloom)" opacity=".9"/>')
     s.append(core)
     s.append(faces)
-    s.append('<use xlink:href="#wire" filter="url(#bloom)" opacity=".75"/>')
     s.append(wire)
     s.append(verts)
-    # glow under the two pulse heads, then the crisp pulses on top
-    s.append(f'<g fill="{LIME}"><use xlink:href="#ph0" filter="url(#bloomS)"/>'
-             f'<use xlink:href="#ph1" filter="url(#bloomS)"/></g>')
     s.append(pulses)
     s.append(ring_front)
     s.append("</g>")
@@ -735,8 +679,6 @@ def build():
     s.append(typing)
 
     # overlays
-    s.append(f'<rect class="scanband" y="0" width="{W}" height="80" fill="url(#band)"/>')
-    s.append(f'<rect width="{W}" height="{H}" fill="url(#scan)"/>')
     s.append(f'<rect width="{W}" height="{H}" fill="url(#vig)"/>')
     s.append("</g>")
     s.append(f'<rect x=".5" y=".5" width="{W - 1}" height="{H - 1}" rx="21.5" fill="none" stroke="{HAIR}"/>')
